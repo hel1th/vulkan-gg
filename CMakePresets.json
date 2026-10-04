@@ -1,11 +1,17 @@
 {
-	"version": 2,
+	"version": 3,
 	"configurePresets": [
 		{
 			"name": "common",
 			"hidden": true,
 			"generator": "Ninja",
-			"cacheVariables": {}
+			"architecture": {
+				"value": "x64",
+				"strategy": "external"
+			},
+			"cacheVariables": {
+				"CMAKE_EXPORT_COMPILE_COMMANDS": true
+			}
 		},
 		{
 			"name": "debug",
@@ -26,21 +32,25 @@
 		{
 			"name": "msvc-debug",
 			"inherits": "debug",
-			"generator": "Visual Studio 17 2022"
+			"binaryDir": "build-msvc-debug",
+			"generator": "Visual Studio 18 2026"
 		},
 		{
 			"name": "msvc-release",
 			"inherits": "release",
-			"generator": "Visual Studio 17 2022"
+			"binaryDir": "build-msvc-release",
+			"generator": "Visual Studio 18 2026"
 		},
 		{
 			"name": "mingw-debug",
 			"inherits": "debug",
+			"binaryDir": "build-mingw-debug",
 			"generator": "MinGW Makefiles"
 		},
 		{
 			"name": "mingw-release",
 			"inherits": "release",
+			"binaryDir": "build-mingw-release",
 			"generator": "MinGW Makefiles"
 		}
 	]

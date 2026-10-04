@@ -5,6 +5,7 @@
 You need C++ compiler, Vulkan SDK and CMake installed before you can build this project.
 
 This project uses C++20 standard and thus requires either of those compilers:
+
 - GCC 10.X
 - Clang 10
 - Microsoft Visual Studio 2019

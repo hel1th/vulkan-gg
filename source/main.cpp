@@ -1,16 +1,16 @@
-#include <cstdint>
 #include <climits>
+#include <cstdint>
 
 #include <iostream>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
-#include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
+#include <imgui.h>
 
-#include "graphics_internal.hpp"
 #include "application.hpp"
+#include "graphics_internal.hpp"
 
 namespace {
 
@@ -19,7 +19,7 @@ constexpr int32_t default_window_height = 720;
 
 constexpr char default_window_title[] = "Vulkan Starter App";
 
-GLFWwindow* glfw_window;
+GLFWwindow *glfw_window;
 
 } // namespace
 
@@ -34,19 +34,20 @@ int main() {
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
 	glfw_window = glfwCreateWindow(default_window_width, default_window_height,
-	                               default_window_title, nullptr, nullptr);
+								   default_window_title, nullptr, nullptr);
 	if (glfw_window == nullptr) {
 		status = EXIT_FAILURE;
 		goto err_null_window;
 	}
 
-	glfwSetFramebufferSizeCallback(glfw_window, [](GLFWwindow*, int width, int height){
-		if (width == 0 || height == 0) {
-			return;
-		}
+	glfwSetFramebufferSizeCallback(
+		glfw_window, [](GLFWwindow *, int width, int height) {
+			if (width == 0 || height == 0) {
+				return;
+			}
 
-		graphics::internal::resize(width, height);
-	});
+			graphics::internal::resize(width, height);
+		});
 
 	if (ImGui::CreateContext() == nullptr) {
 		std::cerr << "Failed to create ImGUI context\n";
@@ -55,7 +56,8 @@ int main() {
 	}
 
 	if (!ImGui_ImplGlfw_InitForVulkan(glfw_window, true)) {
-		std::cerr << "Failed to initialize ImGUI GLFW backend for Vulkan renderer\n";
+		std::cerr
+			<< "Failed to initialize ImGUI GLFW backend for Vulkan renderer\n";
 		status = EXIT_FAILURE;
 		goto err_imgui_glfw_init;
 	}
@@ -76,13 +78,18 @@ int main() {
 		const double time = glfwGetTime();
 
 		glfwPollEvents();
+		// Wait GPU to finish rendering
+		const auto fd = graphics::internal::prepare();
+		if (fd.command_buffer == VK_NULL_HANDLE) {
+			status = EXIT_FAILURE;
+			break;
+		}
 		ImGui_ImplGlfw_NewFrame();
 
 		ImGui::NewFrame();
 		application::update(time);
 		ImGui::Render();
 
-		graphics::internal::FrameData fd = graphics::internal::prepare();
 		application::render(fd);
 		graphics::internal::submitAndPresent();
 	}
@@ -99,5 +106,5 @@ err_imgui_init:
 err_null_window:
 	glfwTerminate();
 
-	return 0;
+	return status;
 }
