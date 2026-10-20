@@ -71,6 +71,7 @@ int main() {
 	if (!application::initialize()) {
 		std::cerr << "Failed to initialize application\n";
 		status = EXIT_FAILURE;
+		application::shutdown();
 		goto err_application_init;
 	}
 

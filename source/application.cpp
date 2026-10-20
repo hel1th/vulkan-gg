@@ -20,16 +20,16 @@ namespace {
 
 struct Vertex {
 	glm::vec3 position;
-	glm::vec3 color;
+	glm::vec3 normal;
 };
 
-std::array<Vertex, 6> octahedron_vertices = {{
-	{{0.0f, 1.0f, 0.0f}, {}},
-	{{0.0f, -1.0f, 0.0f}, {}},
-	{{1.0f, 0.0f, 0.0f}, {}},
-	{{0.0f, 0.0f, 1.0f}, {}},
-	{{-1.0f, 0.0f, 0.0f}, {}},
-	{{0.0f, 0.0f, -1.0f}, {}},
+const std::array<glm::vec3, 6> octahedron_positions = {{
+	{0.0f, 1.0f, 0.0f},
+	{0.0f, -1.0f, 0.0f},
+	{1.0f, 0.0f, 0.0f},
+	{0.0f, 0.0f, 1.0f},
+	{-1.0f, 0.0f, 0.0f},
+	{0.0f, 0.0f, -1.0f},
 }};
 
 // CCW
@@ -47,52 +47,85 @@ const std::array<uint16_t, 24> octahedron_indices = {
 	1, 5, 2, // -Z, +X
 };
 
-struct UniformBufferObject {
-	alignas(16) glm::mat4 mvp;
-	alignas(16) glm::vec4 tintColor;
+struct SceneData {
+	glm::mat4 view_projection;
+	glm::vec4 camera;
+	glm::vec4 ambient;
+	glm::vec4 light_direction;
+	glm::vec4 light_color;
+	glm::ivec4 light_counts;
 };
 
-VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+struct ModelData {
+	glm::mat4 model;
+	glm::mat4 normal_matrix;
+	glm::vec4 albedo;
+	glm::vec4 specular;
+};
+
+struct PointLight {
+	glm::vec4 position = {2.0f, 1.5f, 2.0f, 0.0f};
+	glm::vec4 color = {1.0f, 0.65f, 0.3f, 3.0f};
+};
+
+struct SpotLight {
+	PointLight light = {{-2.0f, 2.0f, 2.0f, 0.0f}, {0.4f, 0.65f, 1.0f, 6.0f}};
+	glm::vec4 direction = {1.0f, -1.0f, -1.0f, 0.0f};
+	glm::vec4 angles = {18.0f, 30.0f, 0.0f, 0.0f};
+};
+
+struct DataBuffer {
+	VkBuffer buffer = VK_NULL_HANDLE;
+	VmaAllocation allocation = VK_NULL_HANDLE;
+	void *mapped = nullptr;
+};
+
+VkDescriptorSetLayout descriptor_layouts[2]{};
+VkDescriptorSet descriptor_sets[2]{};
+VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 VkPipeline pipeline = VK_NULL_HANDLE;
 
-VkBuffer vertex_buffer = VK_NULL_HANDLE;
-VmaAllocation vertex_buffer_alloc = VK_NULL_HANDLE;
+DataBuffer vertex_buffer, scene_buffer, model_buffer, point_buffer, spot_buffer;
+constexpr uint32_t octahedron_count = octahedron_indices.size();
 
-VkBuffer index_buffer = VK_NULL_HANDLE;
-VmaAllocation index_buffer_alloc = VK_NULL_HANDLE;
-
-VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-VkBuffer ubo_buffer = VK_NULL_HANDLE;
-VmaAllocation ubo_alloc = VK_NULL_HANDLE;
-void *ubo_mapped_data = nullptr;
-VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-
-// Scene parameters
+// Camera
+glm::vec3 camera_pos = {0.0f, 2.5f, 6.0f};
+float camera_yaw = 0.0f;
+float camera_pitch = -22.62f;
 int current_proj_item = 0; // 0 - Perspective, 1 - Orthographic
 float fov = 45.0f;
 float ortho_size = 3.0f;
 
+// Object
 glm::vec3 obj_pos = {0.0f, 0.0f, 0.0f};
 glm::vec3 obj_rot = {0.0f, 0.0f, 0.0f};
 glm::vec3 obj_scale = {1.0f, 1.0f, 1.0f};
 
-glm::vec3 tint_color = {1.0f, 1.0f, 1.0f};
+glm::vec3 albedo = {0.7f, 0.55f, 0.35f};
+glm::vec3 specular_color = {1.0f, 1.0f, 1.0f};
+float shininess = 32.0f;
 
-bool enable_trajectory = true;
+bool enable_trajectory = false;
 bool anim_playing = true;
 float anim_speed = 1.0f;
 float trajectory_radius = 2.5f;
 float anim_time = 0.0f;
 double last_time = 0.0;
 
-std::vector<char> readShaderFile(const std::string &filename) {
-	std::ifstream file(filename, std::ios::ate | std::ios::binary);
+// Lights
+constexpr size_t max_lights = 32;
+glm::vec4 ambient = {1.0f, 1.0f, 1.0f, 0.15f};
+glm::vec4 light_direction = {-1.0f, -1.0f, -1.0f, 0.0f};
+glm::vec4 light_color = {1.0f, 1.0f, 1.0f, 0.65f};
+std::vector<PointLight> point_lights = {PointLight{}};
+std::vector<SpotLight> spot_lights = {SpotLight{}};
+
+std::vector<char> readShaderFile(const char *filename) {
+	const std::string path = std::string(SHADER_DIRECTORY) + '/' + filename;
+	std::ifstream file(path, std::ios::ate | std::ios::binary);
 	if (!file.is_open()) {
-		file.open("../" + filename, std::ios::ate | std::ios::binary);
-	}
-	if (!file.is_open()) {
-		std::cerr << "Failed to open shader file: " << filename << std::endl;
+		std::cerr << "Failed to open shader file: " << path << std::endl;
 		return {};
 	}
 	const size_t file_size = static_cast<size_t>(file.tellg());
@@ -118,22 +151,60 @@ VkShaderModule createShaderModule(VkDevice device,
 	return shader_module;
 }
 
-bool createBuffer(VmaAllocator allocator, VkDeviceSize size,
-				  VkBufferUsageFlags usage, VkBuffer &buffer,
-				  VmaAllocation &allocation) {
+bool createBuffer(DataBuffer &data, VkDeviceSize size,
+				  VkBufferUsageFlags usage) {
+	const auto allocator = graphics::internal::context.allocator;
 	const VkBufferCreateInfo buffer_info = {
 		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		.size = size,
 		.usage = usage,
 		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 	};
-
 	const VmaAllocationCreateInfo alloc_info = {
-		.usage = VMA_MEMORY_USAGE_CPU_TO_GPU,
+		.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+				 VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+		.usage = VMA_MEMORY_USAGE_AUTO,
 	};
+	VmaAllocationInfo mapped_info{};
+	if (vmaCreateBuffer(allocator, &buffer_info, &alloc_info, &data.buffer,
+						&data.allocation, &mapped_info) != VK_SUCCESS) {
+		return false;
+	}
+	data.mapped = mapped_info.pMappedData;
+	return true;
+}
 
-	return vmaCreateBuffer(allocator, &buffer_info, &alloc_info, &buffer,
-						   &allocation, nullptr) == VK_SUCCESS;
+void writeBuffer(const DataBuffer &buffer, const void *data, size_t size) {
+	if (size == 0) {
+		return;
+	}
+	std::memcpy(buffer.mapped, data, size);
+	vmaFlushAllocation(graphics::internal::context.allocator, buffer.allocation,
+					   0, size);
+}
+
+std::array<Vertex, octahedron_count> makeVertices() {
+	std::array<Vertex, octahedron_count> vertices{};
+	for (size_t i = 0; i < octahedron_count; i += 3) {
+		const auto a = octahedron_positions[octahedron_indices[i]];
+		const auto b = octahedron_positions[octahedron_indices[i + 1]];
+		const auto c = octahedron_positions[octahedron_indices[i + 2]];
+		const auto normal = glm::normalize(glm::cross(b - a, c - a));
+		vertices[i] = {a, normal};
+		vertices[i + 1] = {b, normal};
+		vertices[i + 2] = {c, normal};
+	}
+	return vertices;
+}
+
+void editLightColor(glm::vec4 &color) {
+	ImGui::ColorEdit3("Color", glm::value_ptr(color));
+	ImGui::SliderFloat("Intensity", &color.w, 0.0f, 20.0f);
+}
+
+void editPointLight(PointLight &light) {
+	ImGui::DragFloat3("Position", glm::value_ptr(light.position), 0.05f);
+	editLightColor(light.color);
 }
 
 } // namespace
@@ -141,127 +212,105 @@ bool createBuffer(VmaAllocator allocator, VkDeviceSize size,
 bool initialize() {
 	auto &context = graphics::internal::context;
 
-	for (auto &vertex : octahedron_vertices) {
-		vertex.color = 0.5f * vertex.position + glm::vec3(0.5f);
-	}
-
 	// Buffers
-	const VkDeviceSize vertex_buffer_size =
-		sizeof(octahedron_vertices[0]) * octahedron_vertices.size();
-	if (!createBuffer(context.allocator, vertex_buffer_size,
-					  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertex_buffer,
-					  vertex_buffer_alloc)) {
-		std::cerr << "Failed to create vertex buffer\n";
+	const auto vertices = makeVertices();
+	const VkDeviceSize vertex_size = sizeof(Vertex) * vertices.size();
+	const VkDeviceSize point_size = sizeof(PointLight) * max_lights;
+	const VkDeviceSize spot_size = sizeof(SpotLight) * max_lights;
+	if (!createBuffer(vertex_buffer, vertex_size,
+					  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+		!createBuffer(scene_buffer, sizeof(SceneData),
+					  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+		!createBuffer(model_buffer, sizeof(ModelData),
+					  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+		!createBuffer(point_buffer, point_size,
+					  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+		!createBuffer(spot_buffer, spot_size,
+					  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+		std::cerr << "Failed to create buffers\n";
 		return false;
 	}
+	writeBuffer(vertex_buffer, vertices.data(), vertex_size);
 
-	void *mapped_data = nullptr;
-	vmaMapMemory(context.allocator, vertex_buffer_alloc, &mapped_data);
-	std::memcpy(mapped_data, octahedron_vertices.data(), vertex_buffer_size);
-	vmaFlushAllocation(context.allocator, vertex_buffer_alloc, 0,
-					   vertex_buffer_size);
-	vmaUnmapMemory(context.allocator, vertex_buffer_alloc);
-
-	const VkDeviceSize index_buffer_size =
-		sizeof(octahedron_indices[0]) * octahedron_indices.size();
-
-	if (!createBuffer(context.allocator, index_buffer_size,
-					  VK_BUFFER_USAGE_INDEX_BUFFER_BIT, index_buffer,
-					  index_buffer_alloc)) {
-		std::cerr << "Failed to create index buffer\n";
-		return false;
-	}
-
-	vmaMapMemory(context.allocator, index_buffer_alloc, &mapped_data);
-	std::memcpy(mapped_data, octahedron_indices.data(), index_buffer_size);
-	vmaFlushAllocation(context.allocator, index_buffer_alloc, 0,
-					   index_buffer_size);
-	vmaUnmapMemory(context.allocator, index_buffer_alloc);
-
-	// UBO
-	if (!createBuffer(context.allocator, sizeof(UniformBufferObject),
-					  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ubo_buffer,
-					  ubo_alloc)) {
-		std::cerr << "Failed to create UBO buffer\n";
-		return false;
-	}
-	vmaMapMemory(context.allocator, ubo_alloc, &ubo_mapped_data);
-
-	// Descriptor Set
-	const VkDescriptorSetLayoutBinding ubo_layout_binding = {
-		.binding = 0,
-		.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		.descriptorCount = 1,
-		.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-		.pImmutableSamplers = nullptr,
+	// Descriptor sets
+	const VkShaderStageFlags both_stages =
+		VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	const VkDescriptorSetLayoutBinding scene_bindings[] = {
+		{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, both_stages, nullptr},
+		{1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+		 nullptr},
+		{2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+		 nullptr},
+	};
+	const VkDescriptorSetLayoutBinding model_binding = {
+		0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, both_stages, nullptr,
 	};
 
-	const VkDescriptorSetLayoutCreateInfo descriptor_layout_info = {
+	VkDescriptorSetLayoutCreateInfo layout_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = 1,
-		.pBindings = &ubo_layout_binding,
+		.bindingCount = 3,
+		.pBindings = scene_bindings,
 	};
-
-	if (vkCreateDescriptorSetLayout(context.device, &descriptor_layout_info,
-									nullptr,
-									&descriptor_set_layout) != VK_SUCCESS) {
-		std::cerr << "Failed to create Descriptor Set Layout\n";
+	if (vkCreateDescriptorSetLayout(context.device, &layout_info, nullptr,
+									&descriptor_layouts[0]) != VK_SUCCESS) {
+		return false;
+	}
+	layout_info.bindingCount = 1;
+	layout_info.pBindings = &model_binding;
+	if (vkCreateDescriptorSetLayout(context.device, &layout_info, nullptr,
+									&descriptor_layouts[1]) != VK_SUCCESS) {
 		return false;
 	}
 
-	// UBO Descriptor Pool
-	const VkDescriptorPoolSize pool_size = {
-		.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		.descriptorCount = 1,
+	const VkDescriptorPoolSize pool_sizes[] = {
+		{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
+		{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
 	};
-
 	const VkDescriptorPoolCreateInfo pool_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-		.maxSets = 1,
-		.poolSizeCount = 1,
-		.pPoolSizes = &pool_size,
+		.maxSets = 2,
+		.poolSizeCount = 2,
+		.pPoolSizes = pool_sizes,
 	};
-
 	if (vkCreateDescriptorPool(context.device, &pool_info, nullptr,
 							   &descriptor_pool) != VK_SUCCESS) {
-		std::cerr << "Failed to create Descriptor Pool\n";
 		return false;
 	}
-
 	const VkDescriptorSetAllocateInfo alloc_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.descriptorPool = descriptor_pool,
-		.descriptorSetCount = 1,
-		.pSetLayouts = &descriptor_set_layout,
+		.descriptorSetCount = 2,
+		.pSetLayouts = descriptor_layouts,
 	};
-
 	if (vkAllocateDescriptorSets(context.device, &alloc_info,
-								 &descriptor_set) != VK_SUCCESS) {
-		std::cerr << "Failed to allocate Descriptor Sets\n";
+								 descriptor_sets) != VK_SUCCESS) {
 		return false;
 	}
 
-	const VkDescriptorBufferInfo buffer_info = {
-		.buffer = ubo_buffer,
-		.offset = 0,
-		.range = sizeof(UniformBufferObject),
+	const VkDescriptorBufferInfo buffer_infos[] = {
+		{scene_buffer.buffer, 0, sizeof(SceneData)},
+		{point_buffer.buffer, 0, point_size},
+		{spot_buffer.buffer, 0, spot_size},
+		{model_buffer.buffer, 0, sizeof(ModelData)},
 	};
-
-	const VkWriteDescriptorSet descriptor_write = {
-		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-		.dstSet = descriptor_set,
-		.dstBinding = 0,
-		.dstArrayElement = 0,
-		.descriptorCount = 1,
-		.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-		.pBufferInfo = &buffer_info,
-	};
-
-	vkUpdateDescriptorSets(context.device, 1, &descriptor_write, 0, nullptr);
+	VkWriteDescriptorSet writes[4]{};
+	for (uint32_t i = 0; i < 4; ++i) {
+		const bool scene = i < 3;
+		writes[i] = {
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = descriptor_sets[scene ? 0 : 1],
+			.dstBinding = scene ? i : 0,
+			.descriptorCount = 1,
+			.descriptorType = scene ? scene_bindings[i].descriptorType
+									: model_binding.descriptorType,
+			.pBufferInfo = &buffer_infos[i],
+		};
+	}
+	vkUpdateDescriptorSets(context.device, 4, writes, 0, nullptr);
 
 	// Shaders reading
-	const auto vert_code = readShaderFile("shaders/octahedron.vert.spv");
-	const auto frag_code = readShaderFile("shaders/octahedron.frag.spv");
+	const auto vert_code = readShaderFile("octahedron.vert.spv");
+	const auto frag_code = readShaderFile("octahedron.frag.spv");
 
 	if (vert_code.empty() || frag_code.empty()) {
 		std::cerr
@@ -273,6 +322,12 @@ bool initialize() {
 		createShaderModule(context.device, vert_code);
 	const VkShaderModule frag_module =
 		createShaderModule(context.device, frag_code);
+
+	if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
+		vkDestroyShaderModule(context.device, frag_module, nullptr);
+		vkDestroyShaderModule(context.device, vert_module, nullptr);
+		return false;
+	}
 
 	const VkPipelineShaderStageCreateInfo shader_stages[] = {
 		{
@@ -292,13 +347,15 @@ bool initialize() {
 	// Pipeline
 	const VkPipelineLayoutCreateInfo pipeline_layout_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
-		.pSetLayouts = &descriptor_set_layout,
+		.setLayoutCount = 2,
+		.pSetLayouts = descriptor_layouts,
 	};
 
 	if (vkCreatePipelineLayout(context.device, &pipeline_layout_info, nullptr,
 							   &pipeline_layout) != VK_SUCCESS) {
 		std::cerr << "Failed to create Pipeline Layout\n";
+		vkDestroyShaderModule(context.device, frag_module, nullptr);
+		vkDestroyShaderModule(context.device, vert_module, nullptr);
 		return false;
 	}
 
@@ -319,7 +376,7 @@ bool initialize() {
 			.location = 1,
 			.binding = 0,
 			.format = VK_FORMAT_R32G32B32_SFLOAT,
-			.offset = offsetof(Vertex, color),
+			.offset = offsetof(Vertex, normal),
 		},
 	};
 
@@ -410,68 +467,35 @@ bool initialize() {
 		.subpass = 0,
 	};
 
-	if (vkCreateGraphicsPipelines(context.device, VK_NULL_HANDLE, 1,
-								  &pipeline_info, nullptr,
-								  &pipeline) != VK_SUCCESS) {
-		std::cerr << "Failed to create graphics pipeline (VkPipeline)\n";
-		vkDestroyShaderModule(context.device, frag_module, nullptr);
-		vkDestroyShaderModule(context.device, vert_module, nullptr);
-		return false;
-	}
-
+	const VkResult result = vkCreateGraphicsPipelines(
+		context.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline);
 	vkDestroyShaderModule(context.device, frag_module, nullptr);
 	vkDestroyShaderModule(context.device, vert_module, nullptr);
-
-	return true;
+	return result == VK_SUCCESS;
 }
 
 void shutdown() {
 	auto &context = graphics::internal::context;
 	vkQueueWaitIdle(context.graphics_queue);
 
-	if (ubo_mapped_data != nullptr) {
-		vmaUnmapMemory(context.allocator, ubo_alloc);
-		ubo_mapped_data = nullptr;
-	}
-	if (ubo_buffer != VK_NULL_HANDLE) {
-		vmaDestroyBuffer(context.allocator, ubo_buffer, ubo_alloc);
-		ubo_buffer = VK_NULL_HANDLE;
+	vkDestroyPipeline(context.device, pipeline, nullptr);
+	vkDestroyPipelineLayout(context.device, pipeline_layout, nullptr);
+	vkDestroyDescriptorPool(context.device, descriptor_pool, nullptr);
+	for (auto layout : descriptor_layouts) {
+		vkDestroyDescriptorSetLayout(context.device, layout, nullptr);
 	}
 
-	if (descriptor_pool != VK_NULL_HANDLE) {
-		vkDestroyDescriptorPool(context.device, descriptor_pool, nullptr);
-		descriptor_pool = VK_NULL_HANDLE;
-	}
-
-	if (descriptor_set_layout != VK_NULL_HANDLE) {
-		vkDestroyDescriptorSetLayout(context.device, descriptor_set_layout,
-									 nullptr);
-		descriptor_set_layout = VK_NULL_HANDLE;
-	}
-
-	if (pipeline != VK_NULL_HANDLE) {
-		vkDestroyPipeline(context.device, pipeline, nullptr);
-		pipeline = VK_NULL_HANDLE;
-	}
-
-	if (pipeline_layout != VK_NULL_HANDLE) {
-		vkDestroyPipelineLayout(context.device, pipeline_layout, nullptr);
-		pipeline_layout = VK_NULL_HANDLE;
-	}
-
-	if (index_buffer != VK_NULL_HANDLE) {
-		vmaDestroyBuffer(context.allocator, index_buffer, index_buffer_alloc);
-		index_buffer = VK_NULL_HANDLE;
-	}
-
-	if (vertex_buffer != VK_NULL_HANDLE) {
-		vmaDestroyBuffer(context.allocator, vertex_buffer, vertex_buffer_alloc);
-		vertex_buffer = VK_NULL_HANDLE;
+	for (auto *buffer : {&vertex_buffer, &scene_buffer, &model_buffer,
+						 &point_buffer, &spot_buffer}) {
+		if (buffer->buffer != VK_NULL_HANDLE) {
+			vmaDestroyBuffer(context.allocator, buffer->buffer,
+							 buffer->allocation);
+		}
 	}
 }
 
 void update(double time) {
-	// delta time
+	// Animation time
 	double dt = 0.0;
 	if (last_time > 0.0) {
 		dt = time - last_time;
@@ -482,27 +506,36 @@ void update(double time) {
 		anim_time += static_cast<float>(dt) * anim_speed;
 	}
 
-	// ImGUI
+	// ImGui
 	ImGui::Begin("Regular Octahedron");
 
-	if (ImGui::CollapsingHeader("Projection matrix",
-								ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::DragFloat3("Position", glm::value_ptr(camera_pos), 0.05f);
+		ImGui::SliderFloat("Yaw", &camera_yaw, -180.0f, 180.0f);
+		ImGui::SliderFloat("Pitch", &camera_pitch, -89.0f, 89.0f, "%.1f",
+						   ImGuiSliderFlags_AlwaysClamp);
+		if (ImGui::Button("Reset camera")) {
+			camera_pos = {0.0f, 2.5f, 6.0f};
+			camera_yaw = 0.0f;
+			camera_pitch = -22.62f;
+		}
 		const char *proj_items[] = {"Perspective", "Orthographic"};
 		ImGui::Combo("Projection mode", &current_proj_item, proj_items, 2);
 		if (current_proj_item == 0) {
-			ImGui::SliderFloat("Field of view (FOV)", &fov, 20.0f, 110.0f);
+			ImGui::SliderFloat("Field of view (FOV)", &fov, 20.0f, 110.0f,
+							   "%.1f", ImGuiSliderFlags_AlwaysClamp);
 		} else {
-			ImGui::SliderFloat("Orthographic size", &ortho_size, 0.5f, 10.0f);
+			ImGui::SliderFloat("Orthographic size", &ortho_size, 0.5f, 10.0f,
+							   "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Object transforms",
-								ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::CollapsingHeader("Object transforms")) {
 		ImGui::DragFloat3("Position (X, Y, Z)", glm::value_ptr(obj_pos), 0.05f);
 		ImGui::SliderFloat3("Rotation (Pitch, Yaw, Roll)",
 							glm::value_ptr(obj_rot), -180.0f, 180.0f);
 		ImGui::DragFloat3("Scale", glm::value_ptr(obj_scale), 0.05f, 0.1f,
-						  10.0f);
+						  10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (ImGui::Button("Reset transforms")) {
 			obj_pos = {0.0f, 0.0f, 0.0f};
 			obj_rot = {0.0f, 0.0f, 0.0f};
@@ -510,8 +543,7 @@ void update(double time) {
 		}
 	}
 
-	if (ImGui::CollapsingHeader("Path animation",
-								ImGuiTreeNodeFlags_DefaultOpen)) {
+	if (ImGui::CollapsingHeader("Path animation")) {
 		ImGui::Checkbox("Enable path", &enable_trajectory);
 		ImGui::SameLine();
 		if (ImGui::Button(anim_playing ? " Pause " : "Start")) {
@@ -521,16 +553,82 @@ void update(double time) {
 		ImGui::SliderFloat("Path radius", &trajectory_radius, 0.5f, 8.0f);
 	}
 
-	if (ImGui::CollapsingHeader("Object colors",
-								ImGuiTreeNodeFlags_DefaultOpen)) {
-		ImGui::ColorEdit3("Octahedron color", glm::value_ptr(tint_color));
-		ImGui::TextDisabled(
-			"Tint multiplies the procedural vertex color gradient.");
+	if (ImGui::CollapsingHeader("Material", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::ColorEdit3("Albedo", glm::value_ptr(albedo));
+		ImGui::ColorEdit3("Specular color", glm::value_ptr(specular_color));
+		ImGui::SliderFloat("Shininess", &shininess, 1.0f, 128.0f, "%.1f",
+						   ImGuiSliderFlags_AlwaysClamp);
+	}
+
+	if (ImGui::CollapsingHeader("Ambient light")) {
+		ImGui::PushID("ambient");
+		editLightColor(ambient);
+		ImGui::PopID();
+	}
+	if (ImGui::CollapsingHeader("Directional light")) {
+		ImGui::PushID("directional");
+		ImGui::DragFloat3("Direction", glm::value_ptr(light_direction), 0.05f);
+		editLightColor(light_color);
+		ImGui::PopID();
+	}
+
+	if (ImGui::CollapsingHeader("Point lights")) {
+		ImGui::BeginDisabled(point_lights.size() >= max_lights);
+		if (ImGui::Button("Add point light")) {
+			point_lights.emplace_back();
+		}
+		ImGui::EndDisabled();
+
+		for (size_t i = 0; i < point_lights.size(); ++i) {
+			ImGui::PushID(static_cast<int>(i));
+			bool remove = false;
+			if (ImGui::TreeNode("point", "Point %zu", i + 1)) {
+				editPointLight(point_lights[i]);
+				remove = ImGui::Button("Remove");
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+			if (remove) {
+				point_lights.erase(point_lights.begin() + i);
+				break;
+			}
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Spotlights")) {
+		ImGui::BeginDisabled(spot_lights.size() >= max_lights);
+		if (ImGui::Button("Add spotlight")) {
+			spot_lights.emplace_back();
+		}
+		ImGui::EndDisabled();
+
+		for (size_t i = 0; i < spot_lights.size(); ++i) {
+			ImGui::PushID(static_cast<int>(i));
+			bool remove = false;
+			if (ImGui::TreeNode("spot", "Spot %zu", i + 1)) {
+				auto &spot = spot_lights[i];
+				editPointLight(spot.light);
+				ImGui::DragFloat3("Direction", glm::value_ptr(spot.direction),
+								  0.05f);
+				ImGui::SliderFloat("Inner angle", &spot.angles.x, 0.0f,
+								   spot.angles.y, "%.1f",
+								   ImGuiSliderFlags_AlwaysClamp);
+				ImGui::SliderFloat("Outer angle", &spot.angles.y, spot.angles.x,
+								   80.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+				remove = ImGui::Button("Remove");
+				ImGui::TreePop();
+			}
+			ImGui::PopID();
+			if (remove) {
+				spot_lights.erase(spot_lights.begin() + i);
+				break;
+			}
+		}
 	}
 
 	ImGui::End();
 
-	// MVP matrix calculation
+	// View and projection
 	const auto extent = graphics::internal::context.swapchain_extent;
 	float aspect =
 		static_cast<float>(extent.width) / static_cast<float>(extent.height);
@@ -538,10 +636,12 @@ void update(double time) {
 		aspect = 1.0f;
 	}
 
-	const glm::vec3 camera_pos = {0.0f, 2.5f, 6.0f};
-	const glm::vec3 camera_target = {0.0f, 0.0f, 0.0f};
-	const glm::vec3 camera_up = {0.0f, 1.0f, 0.0f};
-	const glm::mat4 view = glm::lookAt(camera_pos, camera_target, camera_up);
+	const float yaw = glm::radians(camera_yaw);
+	const float pitch = glm::radians(camera_pitch);
+	const glm::vec3 forward{std::sin(yaw) * std::cos(pitch), std::sin(pitch),
+							-std::cos(yaw) * std::cos(pitch)};
+	const glm::mat4 view = glm::lookAt(camera_pos, camera_pos + forward,
+									   glm::vec3(0.0f, 1.0f, 0.0f));
 
 	glm::mat4 proj;
 	if (current_proj_item == 0) {
@@ -552,11 +652,11 @@ void update(double time) {
 	}
 	proj[1][1] *= -1.0f; // Invert Y
 
+	// Model matrix
 	glm::vec3 cur_pos = obj_pos;
 	glm::vec3 cur_rot = obj_rot;
 
 	if (enable_trajectory) {
-		// Update position and rotation based on animation time
 		cur_pos.x += trajectory_radius * std::cos(anim_time);
 		cur_pos.z += trajectory_radius * std::sin(anim_time);
 		cur_pos.y += 0.5f * trajectory_radius * std::sin(2.0f * anim_time);
@@ -574,12 +674,29 @@ void update(double time) {
 						glm::vec3(0.0f, 0.0f, 1.0f));
 	model = glm::scale(model, obj_scale);
 
-	UniformBufferObject ubo{};
-	ubo.mvp = proj * view * model;
-	ubo.tintColor = glm::vec4(tint_color, 1.0f);
-	std::memcpy(ubo_mapped_data, &ubo, sizeof(ubo));
-	vmaFlushAllocation(graphics::internal::context.allocator, ubo_alloc, 0,
-					   sizeof(ubo));
+	// Shader data
+	const SceneData scene = {
+		.view_projection = proj * view,
+		.camera = current_proj_item == 0 ? glm::vec4(camera_pos, 1.0f)
+										 : glm::vec4(-forward, 0.0f),
+		.ambient = ambient,
+		.light_direction = light_direction,
+		.light_color = light_color,
+		.light_counts = {static_cast<int>(point_lights.size()),
+						 static_cast<int>(spot_lights.size()), 0, 0},
+	};
+	const ModelData object = {
+		.model = model,
+		.normal_matrix = glm::transpose(glm::inverse(model)),
+		.albedo = glm::vec4(albedo, 1.0f),
+		.specular = glm::vec4(specular_color, shininess),
+	};
+	writeBuffer(scene_buffer, &scene, sizeof(scene));
+	writeBuffer(model_buffer, &object, sizeof(object));
+	writeBuffer(point_buffer, point_lights.data(),
+				sizeof(PointLight) * point_lights.size());
+	writeBuffer(spot_buffer, spot_lights.data(),
+				sizeof(SpotLight) * spot_lights.size());
 }
 
 void render(const graphics::internal::FrameData &fd) {
@@ -630,16 +747,13 @@ void render(const graphics::internal::FrameData &fd) {
 					  pipeline);
 
 	const VkDeviceSize offsets[] = {0};
-	vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertex_buffer, offsets);
-	vkCmdBindIndexBuffer(fd.command_buffer, index_buffer, 0,
-						 VK_INDEX_TYPE_UINT16);
+	vkCmdBindVertexBuffers(fd.command_buffer, 0, 1, &vertex_buffer.buffer,
+						   offsets);
 
-	// UBO binding and draw
+	// Octahedron
 	vkCmdBindDescriptorSets(fd.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-							pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
-	vkCmdDrawIndexed(fd.command_buffer,
-					 static_cast<uint32_t>(octahedron_indices.size()), 1, 0, 0,
-					 0);
+							pipeline_layout, 0, 2, descriptor_sets, 0, nullptr);
+	vkCmdDraw(fd.command_buffer, octahedron_count, 1, 0, 0);
 
 	vkCmdEndRenderPass(fd.command_buffer);
 
