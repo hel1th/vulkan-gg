@@ -3,7 +3,7 @@ include(FetchContent)
 
 project(vulkan-starter-app LANGUAGES C CXX)
 
-add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp source/upload.cpp)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -48,6 +48,12 @@ FetchContent_Declare(
 	GIT_TAG v1.92.9
 )
 
+FetchContent_Declare(
+	stb
+	GIT_REPOSITORY https://github.com/nothings/stb.git
+	GIT_TAG f0569113c93ad095470c54bf34a17b36646bbbb5
+)
+
 find_package(Vulkan REQUIRED)
 
 set(GLFW_LIBRARY_TYPE STATIC)
@@ -60,6 +66,7 @@ FetchContent_MakeAvailable(
 	vk-bootstrap
 	VulkanMemoryAllocator
 	imgui
+	stb
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -70,6 +77,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE ${stb_SOURCE_DIR})
 target_sources(${PROJECT_NAME} PRIVATE
 	${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
 	${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
@@ -100,3 +108,4 @@ endforeach()
 add_custom_target(shaders DEPENDS ${SHADER_BINARIES})
 add_dependencies(${PROJECT_NAME} shaders)
 target_compile_definitions(${PROJECT_NAME} PRIVATE "SHADER_DIRECTORY=\"${SHADER_DIRECTORY}\"")
+target_compile_definitions(${PROJECT_NAME} PRIVATE "TEXTURE_DIRECTORY=\"${CMAKE_CURRENT_SOURCE_DIR}/textures\"")
