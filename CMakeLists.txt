@@ -91,7 +91,7 @@ target_sources(${PROJECT_NAME} PRIVATE
 find_program(GLSLC_FOUND NAMES glslc HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" REQUIRED)
 set(SHADER_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/compiled-shaders")
 
-foreach(SHADER_FILE IN ITEMS octahedron.vert octahedron.frag)
+foreach(SHADER_FILE IN ITEMS octahedron.vert octahedron.frag shadow.vert)
 	set(SHADER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${SHADER_FILE}")
 	set(SHADER_BINARY "${SHADER_DIRECTORY}/${SHADER_FILE}.spv")
 	add_custom_command(

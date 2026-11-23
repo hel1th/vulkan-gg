@@ -7,6 +7,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0, std140) uniform Scene {
     mat4 viewProjection;
+    mat4 lightViewProjection;
     vec4 camera;
     vec4 ambient;
     vec4 lightDirection;
@@ -21,11 +22,13 @@ layout(set = 1, binding = 0, std140) uniform Model {
 } model;
 
 layout(set = 1, binding = 1) uniform sampler2D albedoMap;
+layout(set = 0, binding = 3) uniform sampler2DShadow shadowMap;
 
-layout(push_constant) uniform TextureEffect {
+layout(push_constant) uniform DrawOptions {
     float time;
-    uint enabled;
-} effect;
+    uint animated;
+    uint floor;
+} options;
 
 struct PointLight {
     vec4 position;
@@ -63,15 +66,25 @@ vec3 blinnPhong(vec3 n, vec3 v, vec3 l, vec4 lightColor, vec3 albedo) {
          * lightColor.rgb * lightColor.w;
 }
 
+float sunVisibility() {
+    vec3 shadowPosition = (scene.lightViewProjection * vec4(fragPosition, 1.0)).xyz;
+    vec3 samplePosition = vec3(shadowPosition.xy * 0.5 + 0.5, shadowPosition.z);
+    if (any(lessThan(samplePosition, vec3(0.0))) ||
+        any(greaterThanEqual(samplePosition, vec3(1.0)))) {
+        return 1.0;
+    }
+    return textureLod(shadowMap, samplePosition, 0.0);
+}
+
 void main() {
     // Albedo
-    vec3 albedo = texture(albedoMap, fragUV).rgb;
-    if (effect.enabled != 0u) {
-        vec2 offset = vec2(0.15 * sin(effect.time + fragUV.y * 12.0),
-                           0.2 * cos(effect.time));
+    vec3 albedo = options.floor != 0u ? vec3(0.32) : texture(albedoMap, fragUV).rgb;
+    if (options.animated != 0u) {
+        vec2 offset = vec2(0.15 * sin(options.time + fragUV.y * 12.0),
+                           0.2 * cos(options.time));
         vec3 secondSample = texture(albedoMap, fragUV * 1.8 + offset).rgb;
         albedo = mix(albedo, secondSample, 0.45);
-        albedo *= 0.8 + 0.2 * cos(effect.time + fragUV.y * 8.0 + vec3(0.0, 2.0, 4.0));
+        albedo *= 0.8 + 0.2 * cos(options.time + fragUV.y * 8.0 + vec3(0.0, 2.0, 4.0));
     }
 
     vec3 n = normalize(fragNormal);
@@ -79,7 +92,8 @@ void main() {
 
     // Ambient and directional
     vec3 color = albedo * scene.ambient.rgb * scene.ambient.w;
-    color += blinnPhong(n, v, unitVector(-scene.lightDirection.xyz), scene.lightColor, albedo);
+    color += sunVisibility()
+           * blinnPhong(n, v, unitVector(-scene.lightDirection.xyz), scene.lightColor, albedo);
 
     // Point lights
     for (int i = 0; i < scene.lightCounts.x; ++i) {
